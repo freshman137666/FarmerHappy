@@ -105,6 +105,14 @@
       v-if="showCreditLimitModal"
       @close="showCreditLimitModal = false"
       @success="handleCreditLimitSuccess"
+      @viewHistory="handleViewHistoryFromApply"
+    />
+
+    <!-- 申请记录查看 -->
+    <CreditApplicationHistoryModal
+      v-if="showApplicationHistoryModal"
+      @close="showApplicationHistoryModal = false"
+      @apply="handleApplicationHistoryApply"
     />
 
     <!-- 查询贷款产品 -->
@@ -114,7 +122,15 @@
       @apply="handleLoanApply"
     />
 
-    <!-- 申请单人贷款 -->
+    <!-- 统一贷款申请 -->
+    <UnifiedLoanApplicationModal
+      v-if="showUnifiedLoanModal && selectedProduct"
+      :product="selectedProduct"
+      @close="closeUnifiedLoanModal"
+      @success="handleLoanSuccess"
+    />
+
+    <!-- 申请单人贷款（保留兼容性） -->
     <SingleLoanApplicationModal
       v-if="showSingleLoanModal && selectedProduct"
       :product="selectedProduct"
@@ -122,7 +138,7 @@
       @success="handleLoanSuccess"
     />
 
-    <!-- 申请联合贷款 -->
+    <!-- 申请联合贷款（保留兼容性） -->
     <JointLoanApplicationModal
       v-if="showJointLoanModal && selectedProduct"
       ref="jointLoanComponentRef"
@@ -154,10 +170,17 @@
     />
 
     <!-- 银行放款 -->
-    <LoanDisbursementModal
+    <LoanDisbursementListModal
       v-if="showDisbursementModal"
       @close="showDisbursementModal = false"
       @success="handleDisbursementSuccess"
+    />
+
+    <!-- 银行审批信贷额度申请 -->
+    <CreditApprovalModal
+      v-if="showCreditApprovalModal"
+      @close="showCreditApprovalModal = false"
+      @success="handleCreditApprovalSuccess"
     />
 
     <!-- 浏览可联合农户 -->
@@ -165,6 +188,13 @@
       v-if="showPartnersModal"
       @close="showPartnersModal = false"
       @select="handlePartnerSelect"
+    />
+
+    <!-- 贷款申请记录 -->
+    <LoanApplicationHistoryModal
+      v-if="showLoanApplicationHistoryModal"
+      @close="showLoanApplicationHistoryModal = false"
+      @apply="handleLoanApplicationHistoryApply"
     />
   </div>
 </template>
@@ -175,27 +205,35 @@ import { useRouter } from 'vue-router';
 import { financingService } from '../api/financing';
 import logger from '../utils/logger';
 import CreditLimitApplicationModal from './components/CreditLimitApplicationModal.vue';
+import CreditApplicationHistoryModal from './components/CreditApplicationHistoryModal.vue';
 import LoanProductListModal from './components/LoanProductListModal.vue';
+import UnifiedLoanApplicationModal from './components/UnifiedLoanApplicationModal.vue';
 import SingleLoanApplicationModal from './components/SingleLoanApplicationModal.vue';
 import JointLoanApplicationModal from './components/JointLoanApplicationModal.vue';
 import JointPartnersModal from './components/JointPartnersModal.vue';
+import LoanApplicationHistoryModal from './components/LoanApplicationHistoryModal.vue';
 import RepaymentScheduleModal from './components/RepaymentScheduleModal.vue';
 import LoanProductPublishModal from './components/LoanProductPublishModal.vue';
 import LoanApprovalModal from './components/LoanApprovalModal.vue';
-import LoanDisbursementModal from './components/LoanDisbursementModal.vue';
+import LoanDisbursementListModal from './components/LoanDisbursementListModal.vue';
+import CreditApprovalModal from './components/CreditApprovalModal.vue';
 
 export default {
   name: 'Financing',
   components: {
     CreditLimitApplicationModal,
+    CreditApplicationHistoryModal,
     LoanProductListModal,
+    UnifiedLoanApplicationModal,
     SingleLoanApplicationModal,
     JointLoanApplicationModal,
     JointPartnersModal,
+    LoanApplicationHistoryModal,
     RepaymentScheduleModal,
     LoanProductPublishModal,
     LoanApprovalModal,
-    LoanDisbursementModal
+    LoanDisbursementListModal,
+    CreditApprovalModal
   },
   setup() {
     const router = useRouter();
@@ -203,14 +241,18 @@ export default {
     const creditLimit = ref(null);
     const loadingCreditLimit = ref(false);
     const showCreditLimitModal = ref(false);
+    const showApplicationHistoryModal = ref(false);
     const showLoanProductModal = ref(false);
+    const showUnifiedLoanModal = ref(false);
     const showSingleLoanModal = ref(false);
     const showJointLoanModal = ref(false);
     const showPartnersModal = ref(false);
+    const showLoanApplicationHistoryModal = ref(false);
     const showRepaymentModal = ref(false);
     const showPublishProductModal = ref(false);
     const showApprovalModal = ref(false);
     const showDisbursementModal = ref(false);
+    const showCreditApprovalModal = ref(false);
     const selectedProduct = ref(null);
     const jointLoanComponentRef = ref(null);
 
@@ -239,29 +281,25 @@ export default {
         action: () => { showCreditLimitModal.value = true; }
       },
       {
+        id: 'application_history',
+        name: '额度申请记录',
+        description: '查看额度申请历史记录及审批状态',
+        icon: '📊',
+        action: () => { showApplicationHistoryModal.value = true; }
+      },
+      {
+        id: 'loan_application_history',
+        name: '贷款申请记录',
+        description: '查看贷款申请状态，追踪审批进度',
+        icon: '📜',
+        action: () => { showLoanApplicationHistoryModal.value = true; }
+      },
+      {
         id: 'loan_products',
         name: '查看贷款产品',
         description: '浏览可申请的贷款产品，选择合适的贷款方案',
         icon: '📋',
         action: () => { showLoanProductModal.value = true; }
-      },
-      {
-        id: 'single_loan',
-        name: '申请单人贷款',
-        description: '以个人名义申请贷款',
-        icon: '👤',
-        action: () => { 
-          showLoanProductModal.value = true;
-        }
-      },
-      {
-        id: 'joint_loan',
-        name: '申请联合贷款',
-        description: '与其他农户联合申请贷款',
-        icon: '👥',
-        action: () => { 
-          showLoanProductModal.value = true;
-        }
       },
       {
         id: 'repayment',
@@ -280,6 +318,13 @@ export default {
         description: '创建新的贷款产品供农户申请',
         icon: '➕',
         action: () => { showPublishProductModal.value = true; }
+      },
+      {
+        id: 'approve_credit',
+        name: '审批信贷额度申请',
+        description: '审核农户提交的信贷额度申请',
+        icon: '📝',
+        action: () => { showCreditApprovalModal.value = true; }
       },
       {
         id: 'approve_loan',
@@ -368,11 +413,26 @@ export default {
       loadCreditLimit();
     };
 
+    // 申请记录页面的申请按钮处理
+    const handleApplicationHistoryApply = () => {
+      showApplicationHistoryModal.value = false;
+      showCreditLimitModal.value = true;
+    };
+
+    // 从申请页面跳转到申请记录
+    const handleViewHistoryFromApply = () => {
+      showCreditLimitModal.value = false;
+      showApplicationHistoryModal.value = true;
+    };
+
     // 贷款申请
     const handleLoanApply = (product, loanType) => {
       selectedProduct.value = product;
       showLoanProductModal.value = false;
-      if (loanType === 'single') {
+      if (loanType === 'unified' || !loanType) {
+        // 默认使用统一申请入口
+        showUnifiedLoanModal.value = true;
+      } else if (loanType === 'single') {
         showSingleLoanModal.value = true;
       } else if (loanType === 'joint') {
         showJointLoanModal.value = true;
@@ -383,6 +443,12 @@ export default {
     const closeLoanModal = () => {
       showSingleLoanModal.value = false;
       showJointLoanModal.value = false;
+      selectedProduct.value = null;
+    };
+
+    // 关闭统一贷款申请弹窗
+    const closeUnifiedLoanModal = () => {
+      showUnifiedLoanModal.value = false;
       selectedProduct.value = null;
     };
 
@@ -408,6 +474,11 @@ export default {
       showDisbursementModal.value = false;
     };
 
+    // 信贷额度审批成功
+    const handleCreditApprovalSuccess = () => {
+      showCreditApprovalModal.value = false;
+    };
+
     // 选择联合伙伴
     const handlePartnerSelect = (partners) => {
       showPartnersModal.value = false;
@@ -415,6 +486,12 @@ export default {
       if (jointLoanComponentRef.value && jointLoanComponentRef.value.handlePartnerSelect) {
         jointLoanComponentRef.value.handlePartnerSelect(partners);
       }
+    };
+
+    // 贷款申请记录页面申请新贷款
+    const handleLoanApplicationHistoryApply = () => {
+      showLoanApplicationHistoryModal.value = false;
+      showLoanProductModal.value = true;
     };
 
     return {
@@ -427,26 +504,35 @@ export default {
       farmerModules,
       bankModules,
       showCreditLimitModal,
+      showApplicationHistoryModal,
       showLoanProductModal,
+      showUnifiedLoanModal,
       showSingleLoanModal,
       showJointLoanModal,
       showRepaymentModal,
       showPublishProductModal,
       showApprovalModal,
       showDisbursementModal,
+      showCreditApprovalModal,
+      showLoanApplicationHistoryModal,
       selectedProduct,
       formatAmount,
       handleBack,
       handleModuleClick,
       loadCreditLimit,
       handleCreditLimitSuccess,
+      handleApplicationHistoryApply,
+      handleViewHistoryFromApply,
       handleLoanApply,
       closeLoanModal,
+      closeUnifiedLoanModal,
       handleLoanSuccess,
       handlePublishSuccess,
       handleApprovalSuccess,
       handleDisbursementSuccess,
-      handlePartnerSelect
+      handleCreditApprovalSuccess,
+      handlePartnerSelect,
+      handleLoanApplicationHistoryApply
     };
   }
 };

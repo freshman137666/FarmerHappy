@@ -1,31 +1,35 @@
 // src/config/RouterConfig.java
 package config;
 
+import controller.AiController;
 import controller.AuthController;
-import controller.ProductController;
-import controller.ContentController;
 import controller.CommentController;
-import controller.OrderController;
+import controller.ContentController;
 import controller.FinancingController;
+import controller.OrderController;
+import controller.PriceCrawlerController;
+import controller.PricePredictionController;
+import controller.ProductController;
 import dto.auth.*;
-import dto.farmer.*;
 import dto.bank.*;
-import dto.community.*;
 import dto.buyer.*;
+import dto.community.*;
+import dto.farmer.*;
 import dto.financing.*;
-
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.UUID;
-import java.util.Base64;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class RouterConfig {
     private AuthController authController;
@@ -34,6 +38,10 @@ public class RouterConfig {
     private CommentController commentController;
     private OrderController orderController;
     private FinancingController financingController;
+    private AiController aiController;
+    private PricePredictionController pricePredictionController;
+    private PriceCrawlerController priceCrawlerController;
+
 
     public RouterConfig() {
         this.authController = new AuthController();
@@ -42,10 +50,28 @@ public class RouterConfig {
         this.commentController = new CommentController();
         this.orderController = new OrderController();
         this.financingController = new FinancingController();
+        this.aiController = new AiController();
+        this.pricePredictionController = new PricePredictionController();
+        this.priceCrawlerController = new PriceCrawlerController();
     }
 
     public Map<String, Object> handleRequest(String path, String method, Map<String, Object> requestBody,
             Map<String, String> headers, Map<String, String> queryParams) {
+
+        // ============= 农产品价格爬虫相关路由 =============
+
+        // 获取爬虫数据
+        if ("/api/v1/agriculture/price".equals(path) && "POST".equals(method)) {
+            return priceCrawlerController.crawlAgriculturalPrices(requestBody);
+        }
+        // ============= AI 农业专家相关路由 =============
+
+        // 与 AI 农业专家对话
+        if ("/api/v1/ai/expert-chat".equals(path) && "POST".equals(method)) {
+            String question = requestBody != null ? (String) requestBody.get("question") : null;
+            return aiController.chatWithAiExpert(question);
+        }
+
         // ============= 融资相关路由 =============
 
         // 在处理请求的方法中添加
@@ -70,6 +96,30 @@ public class RouterConfig {
             return financingController.disburseLoan(request);
         }
 
+        // 银行审批信贷额度申请
+        if ("/api/v1/bank/credit/approve".equals(path) && "POST".equals(method)) {
+            CreditApprovalRequestDTO request = parseCreditApprovalRequest(requestBody);
+            return financingController.approveCreditApplication(request);
+        }
+
+        // 获取待审批的信贷额度申请列表
+        if ("/api/v1/bank/credit/pending".equals(path) && "POST".equals(method)) {
+            String phone = (String) requestBody.get("phone");
+            return financingController.getPendingCreditApplications(phone);
+        }
+
+        // 获取待审批的贷款申请列表
+        if ("/api/v1/bank/loans/pending".equals(path) && "POST".equals(method)) {
+            String phone = (String) requestBody.get("phone");
+            return financingController.getPendingLoanApplications(phone);
+        }
+
+        // 获取已审批待放款的贷款申请列表
+        if ("/api/v1/bank/loans/approved".equals(path) && "POST".equals(method)) {
+            String phone = (String) requestBody.get("phone");
+            return financingController.getApprovedLoanApplications(phone);
+        }
+
         // 查询可用贷款额度
         if ("/api/v1/financing/credit/limit".equals(path) && "POST".equals(method)) {
             CreditLimitRequestDTO request = parseCreditLimitRequest(requestBody);
@@ -80,6 +130,24 @@ public class RouterConfig {
         if ("/api/v1/financing/credit/apply".equals(path) && "POST".equals(method)) {
             CreditApplicationRequestDTO request = parseCreditApplicationRequest(requestBody);
             return financingController.applyForCreditLimit(request);
+        }
+
+        // 获取农户申请记录
+        if ("/api/v1/financing/credit/applications".equals(path) && "POST".equals(method)) {
+            String phone = (String) requestBody.get("phone");
+            return financingController.getFarmerCreditApplications(phone);
+        }
+
+        // 获取农户已放款的贷款列表
+        if ("/api/v1/financing/loans/list".equals(path) && "POST".equals(method)) {
+            String phone = (String) requestBody.get("phone");
+            return financingController.getFarmerLoans(phone);
+        }
+
+        // 获取农户贷款申请记录
+        if ("/api/v1/financing/loans/applications".equals(path) && "POST".equals(method)) {
+            String phone = (String) requestBody.get("phone");
+            return financingController.getFarmerLoanApplications(phone);
         }
 
         // 查询可申请的贷款产品
@@ -110,6 +178,24 @@ public class RouterConfig {
         if ("/api/v1/financing/partners".equals(path) && "POST".equals(method)) {
             PartnersRequestDTO request = parsePartnersRequest(requestBody);
             return financingController.getJointPartners(request);
+        }
+
+        // 智能贷款推荐
+        if ("/api/v1/financing/smart-recommendation".equals(path) && "POST".equals(method)) {
+            SmartLoanRecommendationRequestDTO request = parseSmartLoanRecommendationRequest(requestBody);
+            return financingController.getSmartLoanRecommendation(request);
+        }
+
+        // 联合贷款伙伴确认
+        if ("/api/v1/financing/joint-loan-confirmation".equals(path) && "POST".equals(method)) {
+            JointLoanPartnerConfirmationRequestDTO request = parseJointLoanPartnerConfirmationRequest(requestBody);
+            return financingController.confirmJointLoanApplication(request);
+        }
+
+        // 获取待确认的联合贷款申请
+        if ("/api/v1/financing/pending-joint-loans".equals(path) && "POST".equals(method)) {
+            PendingJointLoanApplicationsRequestDTO request = parsePendingJointLoanApplicationsRequest(requestBody);
+            return financingController.getPendingJointLoanApplications(request);
         }
 
         // ============= 买家订单相关路由 =============
@@ -336,6 +422,19 @@ public class RouterConfig {
             return handleImageUpload(requestBody);
         }
 
+        // ============= 价格预测相关路由 =============
+
+        // 上传Excel文件
+        if ("/api/v1/farmer/price-prediction/upload".equals(path) && "POST".equals(method)) {
+            return handleExcelUpload(requestBody);
+        }
+
+        // 预测价格
+        if ("/api/v1/farmer/price-prediction/predict".equals(path) && "POST".equals(method)) {
+            PricePredictionRequestDTO request = parsePricePredictionRequest(requestBody);
+            return pricePredictionController.predictPrice(request);
+        }
+
         switch (path) {
             case "/api/v1/auth/register":
                 if ("POST".equals(method)) {
@@ -549,6 +648,24 @@ public class RouterConfig {
      */
     private LoanApprovalRequestDTO parseLoanApprovalRequest(Map<String, Object> requestBody) {
         LoanApprovalRequestDTO request = new LoanApprovalRequestDTO();
+        request.setPhone((String) requestBody.get("phone"));
+        request.setApplication_id((String) requestBody.get("application_id"));
+        request.setAction((String) requestBody.get("action"));
+        request.setReject_reason((String) requestBody.get("reject_reason"));
+
+        // 处理数值类型字段
+        if (requestBody.get("approved_amount") instanceof Number) {
+            request.setApproved_amount(BigDecimal.valueOf(((Number) requestBody.get("approved_amount")).doubleValue()));
+        }
+
+        return request;
+    }
+
+    /**
+     * 解析信贷额度审批请求
+     */
+    private CreditApprovalRequestDTO parseCreditApprovalRequest(Map<String, Object> requestBody) {
+        CreditApprovalRequestDTO request = new CreditApprovalRequestDTO();
         request.setPhone((String) requestBody.get("phone"));
         request.setApplication_id((String) requestBody.get("application_id"));
         request.setAction((String) requestBody.get("action"));
@@ -949,6 +1066,121 @@ public class RouterConfig {
             request.setExclude_phones(phones);
         }
 
+        return request;
+    }
+
+    /**
+     * 解析智能贷款推荐请求
+     */
+    private SmartLoanRecommendationRequestDTO parseSmartLoanRecommendationRequest(Map<String, Object> requestBody) {
+        SmartLoanRecommendationRequestDTO request = new SmartLoanRecommendationRequestDTO();
+        request.setPhone((String) requestBody.get("phone"));
+
+        // 处理产品ID
+        Object productIdObj = requestBody.get("product_id");
+        if (productIdObj != null) {
+            request.setProduct_id(productIdObj.toString());
+        }
+
+        // 处理申请金额
+        if (requestBody.get("apply_amount") instanceof Number) {
+            request.setApply_amount(
+                    BigDecimal.valueOf(((Number) requestBody.get("apply_amount")).doubleValue()));
+        }
+
+        return request;
+    }
+
+    /**
+     * 解析联合贷款伙伴确认请求
+     */
+    private JointLoanPartnerConfirmationRequestDTO parseJointLoanPartnerConfirmationRequest(Map<String, Object> requestBody) {
+        JointLoanPartnerConfirmationRequestDTO request = new JointLoanPartnerConfirmationRequestDTO();
+        request.setPhone((String) requestBody.get("phone"));
+        request.setApplication_id((String) requestBody.get("application_id"));
+        request.setAction((String) requestBody.get("action"));
+        return request;
+    }
+
+    /**
+     * 解析获取待确认联合贷款申请请求
+     */
+    private PendingJointLoanApplicationsRequestDTO parsePendingJointLoanApplicationsRequest(Map<String, Object> requestBody) {
+        PendingJointLoanApplicationsRequestDTO request = new PendingJointLoanApplicationsRequestDTO();
+        request.setPhone((String) requestBody.get("phone"));
+        return request;
+    }
+
+    /**
+     * 处理Excel文件上传
+     */
+    private Map<String, Object> handleExcelUpload(Map<String, Object> requestBody) {
+        Map<String, Object> response = new HashMap<>();
+        
+        try {
+            Object fileObj = requestBody != null ? requestBody.get("file") : null;
+            Object fileNameObj = requestBody != null ? requestBody.get("fileName") : null;
+            
+            if (!(fileObj instanceof String)) {
+                response.put("code", 400);
+                response.put("message", "file参数必须为Base64编码的字符串");
+                return response;
+            }
+            
+            String fileBase64 = (String) fileObj;
+            String fileName = fileNameObj != null ? fileNameObj.toString() : "upload.xlsx";
+            
+            // 验证文件类型
+            if (!fileName.endsWith(".xls") && !fileName.endsWith(".xlsx")) {
+                response.put("code", 400);
+                response.put("message", "不支持的文件格式，仅支持.xls和.xlsx文件");
+                return response;
+            }
+            
+            // 解析Base64
+            String base64Data = fileBase64;
+            if (base64Data.contains(",")) {
+                base64Data = base64Data.substring(base64Data.indexOf(",") + 1);
+            }
+            
+            byte[] fileBytes = Base64.getDecoder().decode(base64Data);
+            
+            // 验证文件大小（限制10MB）
+            if (fileBytes.length > 10 * 1024 * 1024) {
+                response.put("code", 400);
+                response.put("message", "文件大小不能超过10MB");
+                return response;
+            }
+            
+            // 创建输入流并调用控制器
+            InputStream inputStream = new ByteArrayInputStream(fileBytes);
+            return pricePredictionController.uploadExcel(inputStream, fileName);
+            
+        } catch (IllegalArgumentException e) {
+            response.put("code", 400);
+            response.put("message", e.getMessage());
+            return response;
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.put("code", 500);
+            response.put("message", "服务器内部错误: " + e.getMessage());
+            return response;
+        }
+    }
+
+    /**
+     * 解析价格预测请求
+     */
+    private PricePredictionRequestDTO parsePricePredictionRequest(Map<String, Object> requestBody) {
+        PricePredictionRequestDTO request = new PricePredictionRequestDTO();
+        request.setFileId((String) requestBody.get("file_id"));
+        
+        Object predictionDaysObj = requestBody.get("prediction_days");
+        if (predictionDaysObj instanceof Number) {
+            request.setPredictionDays(((Number) predictionDaysObj).intValue());
+        }
+        
+        request.setModelType((String) requestBody.get("model_type"));
         return request;
     }
 

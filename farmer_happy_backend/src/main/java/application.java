@@ -11,9 +11,13 @@ import dto.farmer.ProductResponseDTO;
 import dto.farmer.ProductStatusUpdateResponseDTO;
 import dto.farmer.ProductDetailResponseDTO;
 import dto.farmer.ProductBatchActionResultDTO;
+import dto.farmer.PricePredictionResponseDTO;
+import dto.bank.*;
+import dto.farmer.*;
 import dto.community.*;
 import dto.buyer.*;
 import dto.financing.*;
+import dto.crawler.*;
 import repository.DatabaseManager;
 
 import java.io.BufferedReader;
@@ -591,10 +595,12 @@ public class application {
                         return serializeRepaymentScheduleResponseDTO((RepaymentScheduleResponseDTO) value);
                     }else if (value instanceof RepaymentResponseDTO) {
                         return serializeRepaymentResponseDTO((RepaymentResponseDTO) value);
+                    } else if (value instanceof dto.farmer.PricePredictionResponseDTO) {
+                        return serializePricePredictionResponseDTO((dto.farmer.PricePredictionResponseDTO) value);
                     }
-
-
-                    else {
+                     else if (value instanceof  PriceCrawlResponseDTO) {
+                        return  serializePriceCrawlResponseDTO((PriceCrawlResponseDTO) value);
+                    } else {
                         return "\"" + escapeJsonString(value.toString()) + "\"";
                     }
                 }
@@ -1361,6 +1367,20 @@ public class application {
                     return json.toString();
                 }
 
+                // 序列化 PriceCrawlResponseDTO
+                private String serializePriceCrawlResponseDTO(PriceCrawlResponseDTO dto) {
+                    StringBuilder json = new StringBuilder("{");
+                    if (dto.getFile_name() != null) {
+                        json.append("\"file_name\":\"").append(escapeJsonString(dto.getFile_name())).append("\",");
+                    }
+                    if (json.length() > 1) {
+                        json.deleteCharAt(json.length() - 1);
+                    }
+                    json.append("}");
+                    return json.toString();
+                }
+
+
                 // 序列化 CommentReplyItemDTO
                 private String serializeCommentReplyItemDTO(CommentReplyItemDTO dto) {
                     StringBuilder json = new StringBuilder("{");
@@ -1866,6 +1886,38 @@ public class application {
                     }
                     if (json.length() > 1) {
                         json.deleteCharAt(json.length() - 1);
+                    }
+                    json.append("}");
+                    return json.toString();
+                }
+
+                // 序列化 PricePredictionResponseDTO
+                private String serializePricePredictionResponseDTO(PricePredictionResponseDTO dto) {
+                    StringBuilder json = new StringBuilder("{");
+                    
+                    if (dto.getHistoricalData() != null) {
+                        json.append("\"historical_data\":").append(serializeList(dto.getHistoricalData())).append(",");
+                    }
+                    
+                    if (dto.getPredictedData() != null) {
+                        json.append("\"predicted_data\":").append(serializeList(dto.getPredictedData())).append(",");
+                    }
+                    
+                    if (dto.getModelMetrics() != null) {
+                        // 将Map<String, Double>转换为Map<String, Object>
+                        Map<String, Object> metricsMap = new HashMap<>();
+                        for (Map.Entry<String, Double> entry : dto.getModelMetrics().entrySet()) {
+                            metricsMap.put(entry.getKey(), entry.getValue());
+                        }
+                        json.append("\"model_metrics\":").append(toJson(metricsMap)).append(",");
+                    }
+                    
+                    if (dto.getTrend() != null) {
+                        json.append("\"trend\":\"").append(escapeJsonString(dto.getTrend())).append("\",");
+                    }
+                    
+                    if (json.length() > 1) {
+                        json.deleteCharAt(json.length() - 1); // 删除最后一个逗号
                     }
                     json.append("}");
                     return json.toString();
