@@ -10,6 +10,8 @@ import OrderList from '../orders/OrderList.vue';
 import OrderDetail from '../orders/OrderDetail.vue';
 import Financing from '../financing/Financing.vue';
 import PricePrediction from '../pricePrediction/PricePrediction.vue';
+import PriceData from '../priceData/PriceData.vue';
+import ExpertAppointment from '../expert/ExpertAppointment.vue';
 
 const routes = [
   {
@@ -57,6 +59,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/expert-appointment',
+    name: 'ExpertAppointment',
+    component: ExpertAppointment,
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/orders',
     name: 'OrderList',
     component: OrderList,
@@ -78,6 +86,12 @@ const routes = [
     path: '/price-prediction',
     name: 'PricePrediction',
     component: PricePrediction,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/price-data',
+    name: 'PriceData',
+    component: PriceData,
     meta: { requiresAuth: true }
   }
 ];
