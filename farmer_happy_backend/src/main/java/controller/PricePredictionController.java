@@ -21,16 +21,17 @@ public class PricePredictionController {
     }
     
     /**
-     * 上传Excel文件
+     * 上传价格文件（Excel/CSV）
      */
     public Map<String, Object> uploadExcel(InputStream inputStream, String fileName) {
         Map<String, Object> response = new HashMap<>();
         
         try {
             // 验证文件类型
-            if (fileName == null || (!fileName.endsWith(".xls") && !fileName.endsWith(".xlsx"))) {
+            String lower = fileName != null ? fileName.toLowerCase() : null;
+            if (lower == null || (!lower.endsWith(".xls") && !lower.endsWith(".xlsx") && !lower.endsWith(".csv"))) {
                 response.put("code", 400);
-                response.put("message", "不支持的文件格式，仅支持.xls和.xlsx文件");
+                response.put("message", "不支持的文件格式，仅支持.xls、.xlsx、.csv文件");
                 return response;
             }
             
@@ -78,6 +79,14 @@ public class PricePredictionController {
                 predictionDays,
                 modelType
             );
+            
+            // 调试：检查calculationDetails是否设置
+            if (result.getCalculationDetails() != null) {
+                System.out.println("CalculationDetails已设置，包含 " + result.getCalculationDetails().size() + " 个键");
+                System.out.println("键列表: " + result.getCalculationDetails().keySet());
+            } else {
+                System.out.println("警告: CalculationDetails为null!");
+            }
             
             response.put("code", 200);
             response.put("message", "预测成功");
