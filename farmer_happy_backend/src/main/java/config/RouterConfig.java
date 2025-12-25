@@ -257,6 +257,18 @@ public class RouterConfig {
             return financingController.getPendingJointLoanApplications(request);
         }
 
+        // 发送联合贷款消息
+        if ("/api/v1/financing/joint-loan-messages/send".equals(path) && "POST".equals(method)) {
+            JointLoanMessageRequestDTO request = parseJointLoanMessageRequest(requestBody);
+            return financingController.sendJointLoanMessage(request);
+        }
+
+        // 获取联合贷款消息列表
+        if ("/api/v1/financing/joint-loan-messages".equals(path) && "POST".equals(method)) {
+            GetJointLoanMessagesRequestDTO request = parseGetJointLoanMessagesRequest(requestBody);
+            return financingController.getJointLoanMessages(request);
+        }
+
         // ============= 买家订单相关路由 =============
 
         // 创建订单 - /api/v1/buyer/orders
@@ -480,6 +492,53 @@ public class RouterConfig {
                 userType = (String) requestBody.get("user_type");
             }
             return authController.getBalance(phone, userType);
+        }
+
+        // 更新用户信息 - /api/v1/auth/profile
+        if ("/api/v1/auth/profile".equals(path) && "PUT".equals(method)) {
+            UpdateProfileRequestDTO request = new UpdateProfileRequestDTO();
+            request.setPhone((String) requestBody.get("phone"));
+            request.setNickname((String) requestBody.get("nickname"));
+            return authController.updateProfile(request);
+        }
+
+        // 充值 - /api/v1/auth/recharge
+        if ("/api/v1/auth/recharge".equals(path) && "POST".equals(method)) {
+            RechargeRequestDTO request = new RechargeRequestDTO();
+            request.setPhone((String) requestBody.get("phone"));
+            request.setUserType((String) requestBody.get("user_type"));
+            Object amountObj = requestBody.get("amount");
+            if (amountObj != null) {
+                if (amountObj instanceof BigDecimal) {
+                    request.setAmount((BigDecimal) amountObj);
+                } else if (amountObj instanceof Number) {
+                    request.setAmount(BigDecimal.valueOf(((Number) amountObj).doubleValue()));
+                } else if (amountObj instanceof String) {
+                    request.setAmount(new BigDecimal((String) amountObj));
+                }
+            }
+            return authController.recharge(request);
+        }
+
+        // 获取用户详细信息 - /api/v1/auth/profile/detail
+        if ("/api/v1/auth/profile/detail".equals(path) && "GET".equals(method)) {
+            String phone = queryParams != null ? queryParams.get("phone") : null;
+            String userType = queryParams != null ? queryParams.get("user_type") : null;
+            if (phone == null && requestBody != null) {
+                phone = (String) requestBody.get("phone");
+            }
+            if (userType == null && requestBody != null) {
+                userType = (String) requestBody.get("user_type");
+            }
+            return authController.getUserProfile(phone, userType);
+        }
+
+        // 更新买家收货地址 - /api/v1/auth/shipping-address
+        if ("/api/v1/auth/shipping-address".equals(path) && "PUT".equals(method)) {
+            UpdateShippingAddressRequestDTO request = new UpdateShippingAddressRequestDTO();
+            request.setPhone((String) requestBody.get("phone"));
+            request.setShippingAddress((String) requestBody.get("shipping_address"));
+            return authController.updateShippingAddress(request);
         }
 
         if ("/api/v1/storage/upload".equals(path) && "POST".equals(method)) {
@@ -1206,6 +1265,34 @@ public class RouterConfig {
     /**
      * 解析获取待确认联合贷款申请请求
      */
+    private JointLoanMessageRequestDTO parseJointLoanMessageRequest(Map<String, Object> requestBody) {
+        JointLoanMessageRequestDTO request = new JointLoanMessageRequestDTO();
+        if (requestBody.containsKey("phone")) {
+            request.setPhone((String) requestBody.get("phone"));
+        }
+        if (requestBody.containsKey("application_id")) {
+            request.setApplication_id((String) requestBody.get("application_id"));
+        }
+        if (requestBody.containsKey("receiver_phone")) {
+            request.setReceiver_phone((String) requestBody.get("receiver_phone"));
+        }
+        if (requestBody.containsKey("content")) {
+            request.setContent((String) requestBody.get("content"));
+        }
+        return request;
+    }
+
+    private GetJointLoanMessagesRequestDTO parseGetJointLoanMessagesRequest(Map<String, Object> requestBody) {
+        GetJointLoanMessagesRequestDTO request = new GetJointLoanMessagesRequestDTO();
+        if (requestBody.containsKey("phone")) {
+            request.setPhone((String) requestBody.get("phone"));
+        }
+        if (requestBody.containsKey("application_id")) {
+            request.setApplication_id((String) requestBody.get("application_id"));
+        }
+        return request;
+    }
+
     private PendingJointLoanApplicationsRequestDTO parsePendingJointLoanApplicationsRequest(Map<String, Object> requestBody) {
         PendingJointLoanApplicationsRequestDTO request = new PendingJointLoanApplicationsRequestDTO();
         request.setPhone((String) requestBody.get("phone"));

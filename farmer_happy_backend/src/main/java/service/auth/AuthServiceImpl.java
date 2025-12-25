@@ -9,6 +9,8 @@ import repository.DatabaseManager;
 import java.sql.*;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Map;
+import java.util.HashMap;
 
 public class AuthServiceImpl implements AuthService {
     private DatabaseManager databaseManager;
@@ -589,5 +591,182 @@ public class AuthServiceImpl implements AuthService {
         }
         // 如果余额为null，返回0
         return balance != null ? balance : java.math.BigDecimal.ZERO;
+    }
+
+    @Override
+    public void updateProfile(UpdateProfileRequestDTO request) throws SQLException, IllegalArgumentException {
+        if (request.getPhone() == null || request.getPhone().trim().isEmpty()) {
+            throw new IllegalArgumentException("手机号不能为空");
+        }
+        
+        if (request.getNickname() == null || request.getNickname().trim().isEmpty()) {
+            throw new IllegalArgumentException("昵称不能为空");
+        }
+        
+        if (request.getNickname().length() > 30) {
+            throw new IllegalArgumentException("昵称长度不能超过30个字符");
+        }
+        
+        // 验证用户是否存在
+        User user = findUserByPhone(request.getPhone());
+        if (user == null) {
+            throw new IllegalArgumentException("用户不存在");
+        }
+        
+        // 更新昵称
+        databaseManager.updateUserNickname(request.getPhone(), request.getNickname());
+    }
+
+    @Override
+    public void recharge(RechargeRequestDTO request) throws SQLException, IllegalArgumentException {
+        if (request.getPhone() == null || request.getPhone().trim().isEmpty()) {
+            throw new IllegalArgumentException("手机号不能为空");
+        }
+        
+        if (request.getUserType() == null || request.getUserType().trim().isEmpty()) {
+            throw new IllegalArgumentException("用户类型不能为空");
+        }
+        
+        if (request.getAmount() == null || request.getAmount().compareTo(java.math.BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("充值金额必须大于0");
+        }
+        
+        // 验证用户是否存在
+        User user = findUserByPhone(request.getPhone());
+        if (user == null) {
+            throw new IllegalArgumentException("用户不存在");
+        }
+        
+        // 验证用户类型是否匹配（需要检查用户是否有该类型的角色）
+        // 这里简化处理，直接根据userType更新对应的用户余额
+        if ("buyer".equals(request.getUserType())) {
+            String buyerUid = databaseManager.getBuyerUidByPhone(request.getPhone());
+            if (buyerUid == null) {
+                throw new IllegalArgumentException("该用户不是买家");
+            }
+            databaseManager.updateBuyerBalance(buyerUid, request.getAmount());
+        } else if ("farmer".equals(request.getUserType())) {
+            Map<String, Object> farmerInfo = checkUserFarmerRole(user.getUid());
+            if (farmerInfo == null) {
+                throw new IllegalArgumentException("该用户不是农户");
+            }
+            databaseManager.updateFarmerBalance(user.getUid(), request.getAmount());
+        } else if ("bank".equals(request.getUserType())) {
+            // 检查银行角色
+            Connection conn = databaseManager.getConnection();
+            try {
+                String sql = "SELECT COUNT(*) as count FROM user_banks WHERE uid = ? AND enable = TRUE";
+                PreparedStatement stmt = conn.prepareStatement(sql);
+                stmt.setString(1, user.getUid());
+                ResultSet rs = stmt.executeQuery();
+                boolean isBank = false;
+                if (rs.next() && rs.getInt("count") > 0) {
+                    isBank = true;
+                }
+                rs.close();
+                stmt.close();
+                if (!isBank) {
+                    throw new IllegalArgumentException("该用户不是银行");
+                }
+                databaseManager.updateUserBalance(user.getUid(), request.getAmount());
+            } finally {
+                databaseManager.closeConnection();
+            }
+        } else {
+            throw new IllegalArgumentException("不支持的用户类型");
+        }
+    }
+
+    private Map<String, Object> checkUserFarmerRole(String uid) throws SQLException {
+        Connection conn = databaseManager.getConnection();
+        try {
+            String sql = "SELECT farmer_id FROM user_farmers WHERE uid = ? AND enable = TRUE";
+            PreparedStatement stmt = conn.prepareStatement(sql);
+            stmt.setString(1, uid);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                Map<String, Object> result = new HashMap<>();
+                result.put("farmer_id", rs.getLong("farmer_id"));
+                rs.close();
+                stmt.close();
+                return result;
+            }
+            rs.close();
+            stmt.close();
+            return null;
+        } finally {
+            databaseManager.closeConnection();
+        }
+    }
+
+    @Override
+    public UserProfileResponseDTO getUserProfile(String phone, String userType) throws SQLException, IllegalArgumentException {
+        if (phone == null || phone.trim().isEmpty()) {
+            throw new IllegalArgumentException("手机号不能为空");
+        }
+
+        if (userType == null || userType.trim().isEmpty()) {
+            throw new IllegalArgumentException("用户类型不能为空");
+        }
+
+        // 查找用户
+        User user = findUserByPhone(phone);
+        if (user == null) {
+            throw new IllegalArgumentException("用户不存在");
+        }
+
+        // 构建基础用户信息
+        UserProfileResponseDTO profile = new UserProfileResponseDTO();
+        profile.setUid(user.getUid());
+        profile.setPhone(user.getPhone());
+        profile.setNickname(user.getNickname());
+        profile.setUserType(userType);
+        profile.setMoney(user.getMoney());
+
+        // 根据用户类型获取扩展信息
+        if ("buyer".equals(userType)) {
+            Map<String, Object> buyerInfo = databaseManager.getBuyerInfoByPhone(phone);
+            if (buyerInfo != null) {
+                profile.setShippingAddress((String) buyerInfo.get("shipping_address"));
+                profile.setMemberLevel((String) buyerInfo.get("member_level"));
+            }
+        } else if ("farmer".equals(userType)) {
+            Map<String, Object> farmerInfo = databaseManager.getFarmerInfoByUid(user.getUid());
+            if (farmerInfo != null) {
+                profile.setFarmName((String) farmerInfo.get("farm_name"));
+                profile.setFarmAddress((String) farmerInfo.get("farm_address"));
+                profile.setFarmSize((java.math.BigDecimal) farmerInfo.get("farm_size"));
+            }
+        }
+        // 注意：专家和银行的扩展信息获取可以根据需要添加
+
+        return profile;
+    }
+
+    @Override
+    public void updateShippingAddress(UpdateShippingAddressRequestDTO request) throws SQLException, IllegalArgumentException {
+        if (request.getPhone() == null || request.getPhone().trim().isEmpty()) {
+            throw new IllegalArgumentException("手机号不能为空");
+        }
+
+        // 验证收货地址
+        if (request.getShippingAddress() != null && request.getShippingAddress().length() > 500) {
+            throw new IllegalArgumentException("收货地址长度不能超过500个字符");
+        }
+
+        // 验证用户是否存在
+        User user = findUserByPhone(request.getPhone());
+        if (user == null) {
+            throw new IllegalArgumentException("用户不存在");
+        }
+
+        // 验证用户是否为买家
+        String buyerUid = databaseManager.getBuyerUidByPhone(request.getPhone());
+        if (buyerUid == null) {
+            throw new IllegalArgumentException("该用户不是买家");
+        }
+
+        // 更新收货地址
+        databaseManager.updateBuyerShippingAddress(request.getPhone(), request.getShippingAddress());
     }
 }

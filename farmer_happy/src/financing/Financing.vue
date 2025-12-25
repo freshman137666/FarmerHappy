@@ -128,6 +128,8 @@
       :product="selectedProduct"
       @close="closeUnifiedLoanModal"
       @success="handleLoanSuccess"
+      @switch-to-joint="handleSwitchToJointLoan"
+      @switch-to-joint-partners="handleSwitchToJointPartners"
     />
 
     <!-- 申请单人贷款（保留兼容性） -->
@@ -143,6 +145,7 @@
       v-if="showJointLoanModal && selectedProduct"
       ref="jointLoanComponentRef"
       :product="selectedProduct"
+      :selected-partner="selectedPartnerForJointLoan"
       @close="closeLoanModal"
       @success="handleLoanSuccess"
       @open-partners="showPartnersModal = true"
@@ -185,7 +188,8 @@
 
     <!-- 浏览可联合农户 -->
     <JointPartnersModal
-      v-if="showPartnersModal"
+      v-if="showPartnersModal && selectedProduct"
+      :product="selectedProduct"
       @close="showPartnersModal = false"
       @select="handlePartnerSelect"
     />
@@ -196,11 +200,18 @@
       @close="showLoanApplicationHistoryModal = false"
       @apply="handleLoanApplicationHistoryApply"
     />
+
+    <!-- 待确认的联合贷款申请 -->
+    <JointLoanConfirmationModal
+      v-if="showJointLoanConfirmationModal"
+      @close="showJointLoanConfirmationModal = false"
+      @success="handleJointLoanConfirmationSuccess"
+    />
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import { financingService } from '../api/financing';
 import logger from '../utils/logger';
@@ -211,6 +222,7 @@ import UnifiedLoanApplicationModal from './components/UnifiedLoanApplicationModa
 import SingleLoanApplicationModal from './components/SingleLoanApplicationModal.vue';
 import JointLoanApplicationModal from './components/JointLoanApplicationModal.vue';
 import JointPartnersModal from './components/JointPartnersModal.vue';
+import JointLoanConfirmationModal from './components/JointLoanConfirmationModal.vue';
 import LoanApplicationHistoryModal from './components/LoanApplicationHistoryModal.vue';
 import RepaymentScheduleModal from './components/RepaymentScheduleModal.vue';
 import LoanProductPublishModal from './components/LoanProductPublishModal.vue';
@@ -228,6 +240,7 @@ export default {
     SingleLoanApplicationModal,
     JointLoanApplicationModal,
     JointPartnersModal,
+    JointLoanConfirmationModal,
     LoanApplicationHistoryModal,
     RepaymentScheduleModal,
     LoanProductPublishModal,
@@ -249,12 +262,14 @@ export default {
     const showPartnersModal = ref(false);
     const showLoanApplicationHistoryModal = ref(false);
     const showRepaymentModal = ref(false);
+    const showJointLoanConfirmationModal = ref(false);
     const showPublishProductModal = ref(false);
     const showApprovalModal = ref(false);
     const showDisbursementModal = ref(false);
     const showCreditApprovalModal = ref(false);
     const selectedProduct = ref(null);
     const jointLoanComponentRef = ref(null);
+    const selectedPartnerForJointLoan = ref(null); // 存储选择的联合伙伴
 
     // 用户类型判断
     const isFarmer = computed(() => userInfo.value.userType === 'farmer');
@@ -293,6 +308,13 @@ export default {
         description: '查看贷款申请状态，追踪审批进度',
         icon: '📜',
         action: () => { showLoanApplicationHistoryModal.value = true; }
+      },
+      {
+        id: 'joint_loan_confirmation',
+        name: '待确认联合贷款',
+        description: '查看并处理待确认的联合贷款申请',
+        icon: '🤝',
+        action: () => { showJointLoanConfirmationModal.value = true; }
       },
       {
         id: 'loan_products',
@@ -402,8 +424,13 @@ export default {
         moduleName: module.name,
         userType: userInfo.value.userType 
       });
+      console.log('点击模块:', module.id, module.name);
       if (module.action) {
+        console.log('执行模块action');
         module.action();
+        console.log('showJointLoanConfirmationModal:', showJointLoanConfirmationModal.value);
+      } else {
+        console.warn('模块没有action函数:', module);
       }
     };
 
@@ -444,12 +471,36 @@ export default {
       showSingleLoanModal.value = false;
       showJointLoanModal.value = false;
       selectedProduct.value = null;
+      selectedPartnerForJointLoan.value = null; // 清空选择的伙伴
     };
 
     // 关闭统一贷款申请弹窗
     const closeUnifiedLoanModal = () => {
       showUnifiedLoanModal.value = false;
       selectedProduct.value = null;
+    };
+
+    // 从智能申请切换到联合贷款
+    const handleSwitchToJointLoan = () => {
+      // 关闭智能申请弹窗，打开联合贷款弹窗
+      showUnifiedLoanModal.value = false;
+      showJointLoanModal.value = true;
+      // selectedProduct 保持不变，用于联合贷款申请
+    };
+
+    // 从智能申请切换到选择联合伙伴页面
+    const handleSwitchToJointPartners = (product) => {
+      logger.info('FINANCING', '从智能推荐切换到选择联合伙伴', { 
+        product_id: product?.product_id || product?.id 
+      });
+      // 关闭智能申请弹窗
+      showUnifiedLoanModal.value = false;
+      // 确保selectedProduct已设置（如果传入了product则使用，否则保持原有值）
+      if (product) {
+        selectedProduct.value = product;
+      }
+      // 打开选择联合伙伴弹窗
+      showPartnersModal.value = true;
     };
 
     // 贷款申请成功
@@ -479,13 +530,28 @@ export default {
       showCreditApprovalModal.value = false;
     };
 
+    // 联合贷款确认成功
+    const handleJointLoanConfirmationSuccess = () => {
+      showJointLoanConfirmationModal.value = false;
+      loadCreditLimit();
+    };
+
     // 选择联合伙伴
     const handlePartnerSelect = (partners) => {
-      showPartnersModal.value = false;
-      // 将选中的伙伴传递给联合贷款申请组件
-      if (jointLoanComponentRef.value && jointLoanComponentRef.value.handlePartnerSelect) {
-        jointLoanComponentRef.value.handlePartnerSelect(partners);
+      logger.info('FINANCING', '父组件接收到伙伴选择', { 
+        partnersCount: partners?.length || 0,
+        partners: partners
+      });
+      
+      // 直接存储选择的伙伴（选择第一个）
+      if (partners && partners.length > 0) {
+        selectedPartnerForJointLoan.value = partners[0];
+        logger.info('FINANCING', '伙伴选择成功', {
+          partner: selectedPartnerForJointLoan.value
+        });
       }
+      
+      showPartnersModal.value = false;
     };
 
     // 贷款申请记录页面申请新贷款
@@ -509,13 +575,16 @@ export default {
       showUnifiedLoanModal,
       showSingleLoanModal,
       showJointLoanModal,
+      showPartnersModal,
       showRepaymentModal,
       showPublishProductModal,
       showApprovalModal,
       showDisbursementModal,
       showCreditApprovalModal,
       showLoanApplicationHistoryModal,
+      showJointLoanConfirmationModal,
       selectedProduct,
+      selectedPartnerForJointLoan,
       formatAmount,
       handleBack,
       handleModuleClick,
@@ -526,11 +595,14 @@ export default {
       handleLoanApply,
       closeLoanModal,
       closeUnifiedLoanModal,
+      handleSwitchToJointLoan,
+      handleSwitchToJointPartners,
       handleLoanSuccess,
       handlePublishSuccess,
       handleApprovalSuccess,
       handleDisbursementSuccess,
       handleCreditApprovalSuccess,
+      handleJointLoanConfirmationSuccess,
       handlePartnerSelect,
       handleLoanApplicationHistoryApply
     };
@@ -746,7 +818,7 @@ export default {
 
 .modules-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: 1.5rem;
 }
 
@@ -834,6 +906,18 @@ export default {
 }
 
 /* 响应式设计 */
+@media (max-width: 1200px) {
+  .modules-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .modules-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 @media (max-width: 768px) {
   .header {
     padding: 1rem;
@@ -848,7 +932,7 @@ export default {
   }
 
   .modules-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .module-card {

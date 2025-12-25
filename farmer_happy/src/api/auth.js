@@ -164,6 +164,187 @@ export const authService = {
         }
     },
 
+    async updateProfile(phone, nickname) {
+        try {
+            logger.apiRequest('PUT', `${API_URL}/profile`, { phone, nickname });
+            logger.info('AUTH', '开始更新用户信息', { phone, nickname });
+            
+            const response = await axios.put(`${API_URL}/profile`, {
+                phone: phone,
+                nickname: nickname
+            });
+            
+            logger.apiResponse('PUT', `${API_URL}/profile`, response.status, {
+                code: response.data.code,
+                success: response.data.code === 200
+            });
+            
+            if (response.data.code !== 200) {
+                logger.error('AUTH', '更新用户信息失败', {
+                    phone,
+                    nickname,
+                    code: response.data.code,
+                    message: response.data.message
+                });
+                throw new Error(response.data.message || '更新用户信息失败');
+            }
+            
+            // 更新localStorage中的用户信息
+            const storedUser = localStorage.getItem('user');
+            if (storedUser) {
+                const userData = JSON.parse(storedUser);
+                userData.nickname = nickname;
+                localStorage.setItem('user', JSON.stringify(userData));
+            }
+            
+            logger.info('AUTH', '更新用户信息成功', { phone, nickname });
+            return response.data;
+        } catch (error) {
+            logger.apiError('PUT', `${API_URL}/profile`, error);
+            logger.error('AUTH', '更新用户信息失败', {
+                phone,
+                nickname,
+                errorMessage: error.response?.data?.message || error.message
+            }, error);
+            throw error.response?.data?.message || error.message || error;
+        }
+    },
+
+    async recharge(phone, userType, amount) {
+        try {
+            logger.apiRequest('POST', `${API_URL}/recharge`, { phone, user_type: userType, amount });
+            logger.info('AUTH', '开始充值', { phone, userType, amount });
+            
+            const response = await axios.post(`${API_URL}/recharge`, {
+                phone: phone,
+                user_type: userType,
+                amount: amount
+            });
+            
+            logger.apiResponse('POST', `${API_URL}/recharge`, response.status, {
+                code: response.data.code,
+                success: response.data.code === 200
+            });
+            
+            if (response.data.code !== 200) {
+                logger.error('AUTH', '充值失败', {
+                    phone,
+                    userType,
+                    amount,
+                    code: response.data.code,
+                    message: response.data.message
+                });
+                throw new Error(response.data.message || '充值失败');
+            }
+            
+            // 更新localStorage中的余额
+            const storedUser = localStorage.getItem('user');
+            if (storedUser) {
+                const userData = JSON.parse(storedUser);
+                userData.money = response.data.data?.balance || userData.money;
+                localStorage.setItem('user', JSON.stringify(userData));
+            }
+            
+            logger.info('AUTH', '充值成功', { phone, userType, amount, newBalance: response.data.data?.balance });
+            return response.data.data?.balance;
+        } catch (error) {
+            logger.apiError('POST', `${API_URL}/recharge`, error);
+            logger.error('AUTH', '充值失败', {
+                phone,
+                userType,
+                amount,
+                errorMessage: error.response?.data?.message || error.message
+            }, error);
+            throw error.response?.data?.message || error.message || error;
+        }
+    },
+
+    async getUserProfile(phone, userType) {
+        try {
+            logger.apiRequest('GET', `${API_URL}/profile/detail`, { phone, user_type: userType });
+            logger.info('AUTH', '开始获取用户详细信息', { phone, userType });
+            
+            const response = await axios.get(`${API_URL}/profile/detail`, {
+                params: {
+                    phone: phone,
+                    user_type: userType
+                }
+            });
+            
+            logger.apiResponse('GET', `${API_URL}/profile/detail`, response.status, {
+                code: response.data.code,
+                success: response.data.code === 200
+            });
+            
+            if (response.data.code !== 200) {
+                logger.error('AUTH', '获取用户详细信息失败', {
+                    phone,
+                    userType,
+                    code: response.data.code,
+                    message: response.data.message
+                });
+                throw new Error(response.data.message || '获取用户详细信息失败');
+            }
+            
+            logger.info('AUTH', '获取用户详细信息成功', { phone, userType });
+            return response.data.data;
+        } catch (error) {
+            logger.apiError('GET', `${API_URL}/profile/detail`, error);
+            logger.error('AUTH', '获取用户详细信息失败', {
+                phone,
+                userType,
+                errorMessage: error.response?.data?.message || error.message
+            }, error);
+            throw error.response?.data?.message || error.message || error;
+        }
+    },
+
+    async updateShippingAddress(phone, shippingAddress) {
+        try {
+            logger.apiRequest('PUT', `${API_URL}/shipping-address`, { phone, shipping_address: shippingAddress });
+            logger.info('AUTH', '开始更新收货地址', { phone, shippingAddress });
+            
+            const response = await axios.put(`${API_URL}/shipping-address`, {
+                phone: phone,
+                shipping_address: shippingAddress
+            });
+            
+            logger.apiResponse('PUT', `${API_URL}/shipping-address`, response.status, {
+                code: response.data.code,
+                success: response.data.code === 200
+            });
+            
+            if (response.data.code !== 200) {
+                logger.error('AUTH', '更新收货地址失败', {
+                    phone,
+                    shippingAddress,
+                    code: response.data.code,
+                    message: response.data.message
+                });
+                throw new Error(response.data.message || '更新收货地址失败');
+            }
+            
+            // 更新localStorage中的用户信息
+            const storedUser = localStorage.getItem('user');
+            if (storedUser) {
+                const userData = JSON.parse(storedUser);
+                userData.shippingAddress = shippingAddress;
+                localStorage.setItem('user', JSON.stringify(userData));
+            }
+            
+            logger.info('AUTH', '更新收货地址成功', { phone, shippingAddress });
+            return response.data;
+        } catch (error) {
+            logger.apiError('PUT', `${API_URL}/shipping-address`, error);
+            logger.error('AUTH', '更新收货地址失败', {
+                phone,
+                shippingAddress,
+                errorMessage: error.response?.data?.message || error.message
+            }, error);
+            throw error.response?.data?.message || error.message || error;
+        }
+    },
+
     logout() {
         logger.info('AUTH', '用户登出');
         const user = localStorage.getItem('user');

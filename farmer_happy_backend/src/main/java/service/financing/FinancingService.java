@@ -703,7 +703,13 @@ public class FinancingService {
                 throw new IllegalArgumentException("您当前无可用贷款额度");
             }
 
-            // 检查可用额度是否足够
+            // 检查用户的信用额度是否满足产品的最低信用额度要求
+            if (farmerCreditLimit.getAvailableLimit().compareTo(loanProduct.getMinCreditLimit()) < 0) {
+                throw new IllegalArgumentException("您的可用额度" + farmerCreditLimit.getAvailableLimit() + 
+                        "元低于产品最低额度要求" + loanProduct.getMinCreditLimit() + "元，无法申请该产品");
+            }
+
+            // 检查申请金额是否超过用户可用额度
             if (request.getApply_amount().compareTo(farmerCreditLimit.getAvailableLimit()) > 0) {
                 throw new IllegalArgumentException("申请金额" + request.getApply_amount() + "元超过可用额度" +
                         farmerCreditLimit.getAvailableLimit() + "元，请先申请提高额度或减少申请金额");
@@ -792,14 +798,8 @@ public class FinancingService {
                 throw new IllegalArgumentException("您当前无可用贷款额度");
             }
 
-            // 计算发起者应承担的份额（平均分配）
-            BigDecimal shareAmount = request.getApply_amount().divide(BigDecimal.valueOf(request.getPartner_phones().size() + 1), 2, BigDecimal.ROUND_HALF_UP);
-
-            // 检查发起者额度是否足够
-            if (shareAmount.compareTo(initiatorCreditLimit.getAvailableLimit()) > 0) {
-                throw new IllegalArgumentException("您当前可用额度" + initiatorCreditLimit.getAvailableLimit() +
-                        "元，不足以承担联合贷款" + shareAmount + "元的份额，请先申请提高额度");
-            }
+            // 计算总额度（发起人 + 所有伙伴）
+            BigDecimal totalAvailableLimit = initiatorCreditLimit.getAvailableLimit();
 
             // 检查伙伴是否符合条件
             for (String partnerPhone : request.getPartner_phones()) {
@@ -821,12 +821,26 @@ public class FinancingService {
                     throw new IllegalArgumentException("伙伴" + partnerPhone + "无可用贷款额度，无法参与联合贷款");
                 }
 
+                // 累计伙伴额度到总额度（联合贷款以总额度为准）
+                totalAvailableLimit = totalAvailableLimit.add(partnerCreditLimit.getAvailableLimit());
+
                 // 检查伙伴是否有待审批的联合贷款申请
                 // 这里需要实现检查逻辑
             }
 
-            // 预扣额度 - 在创建贷款申请记录前扣除
-            preDeductCreditLimit(((Long) farmerInfo.get("farmer_id")).longValue(), shareAmount);
+            // 检查总额度是否满足产品的最低信用额度要求
+            if (totalAvailableLimit.compareTo(loanProduct.getMinCreditLimit()) < 0) {
+                throw new IllegalArgumentException("您和联合伙伴的总可用额度" + totalAvailableLimit + 
+                        "元低于产品最低额度要求" + loanProduct.getMinCreditLimit() + "元，无法申请该产品");
+            }
+
+            // 检查总额度是否足够覆盖申请金额
+            if (totalAvailableLimit.compareTo(request.getApply_amount()) < 0) {
+                throw new IllegalArgumentException("您和联合伙伴的总可用额度" + totalAvailableLimit + 
+                        "元不足以覆盖申请金额" + request.getApply_amount() + "元，请选择其他产品或寻找更多伙伴");
+            }
+
+            // 联合贷款不在此处预扣发起人额度，等所有伙伴确认后再统一预扣
 
             // 生成贷款申请ID (修改为符合数据库字段长度限制的格式)
             String loanApplicationId = "LOAN" + System.currentTimeMillis() +
@@ -847,23 +861,52 @@ public class FinancingService {
                     request.getRepayment_plan() // 联合贷款使用还款计划作为还款来源
             );
 
-            // 计算每个伙伴的份额（包括发起人，总共人数为伙伴数量+1）
-            int totalParticipants = request.getPartner_phones().size() + 1;
-            BigDecimal partnerShareRatio = BigDecimal.valueOf(100.0).divide(BigDecimal.valueOf(totalParticipants), 2, BigDecimal.ROUND_HALF_UP);
-            BigDecimal partnerShareAmount = request.getApply_amount().divide(BigDecimal.valueOf(totalParticipants), 2, BigDecimal.ROUND_HALF_UP);
+            // 计算额度分配：发起人额度全部用光，伙伴支付剩余额度
+            BigDecimal initiatorAvailableLimit = initiatorCreditLimit.getAvailableLimit();
+            BigDecimal initiatorShareAmount = initiatorAvailableLimit; // 发起人额度全部用光
+            BigDecimal remainingAmount = request.getApply_amount().subtract(initiatorShareAmount);
+            
+            // 检查剩余金额是否大于0（如果发起人额度已足够，则不需要伙伴）
+            if (remainingAmount.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException("您的可用额度已足够覆盖申请金额，无需联合贷款");
+            }
+            
+            // 对于双人联合贷款，剩余金额由伙伴承担
+            // 注意：当前系统只支持双人联合贷款（1个发起人 + 1个伙伴）
+            if (request.getPartner_phones().size() != 1) {
+                throw new IllegalArgumentException("联合贷款目前仅支持双人联合（1个发起人 + 1个伙伴）");
+            }
+            
+            BigDecimal partnerShareAmount = remainingAmount; // 伙伴支付剩余额度
+            
+            // 计算份额比例（用于显示和记录）
+            BigDecimal initiatorShareRatio = initiatorShareAmount.divide(request.getApply_amount(), 4, BigDecimal.ROUND_HALF_UP)
+                    .multiply(BigDecimal.valueOf(100)).setScale(2, BigDecimal.ROUND_HALF_UP);
+            BigDecimal partnerShareRatio = partnerShareAmount.divide(request.getApply_amount(), 4, BigDecimal.ROUND_HALF_UP)
+                    .multiply(BigDecimal.valueOf(100)).setScale(2, BigDecimal.ROUND_HALF_UP);
 
-            // 保存联合贷款伙伴记录
+            // 保存联合贷款伙伴记录（记录伙伴实际支付的额度）
             List<Map<String, Object>> partnerRecords = new ArrayList<>();
             for (String partnerPhone : request.getPartner_phones()) {
                 User partnerUser = findUserByPhone(partnerPhone);
                 Map<String, Object> partnerFarmerInfo = checkUserFarmerRole(partnerUser.getUid());
+                
+                // 检查伙伴额度是否足够支付剩余金额
+                CreditLimit partnerCreditLimit = getCreditLimitByFarmerId(((Long) partnerFarmerInfo.get("farmer_id")).longValue());
+                if (partnerCreditLimit.getAvailableLimit().compareTo(partnerShareAmount) < 0) {
+                    throw new IllegalArgumentException("伙伴" + partnerPhone + "的可用额度" + partnerCreditLimit.getAvailableLimit() + 
+                            "元不足以支付剩余额度" + partnerShareAmount + "元");
+                }
 
                 Map<String, Object> partnerRecord = new HashMap<>();
                 partnerRecord.put("partner_farmer_id", ((Long) partnerFarmerInfo.get("farmer_id")).longValue());
                 partnerRecord.put("partner_share_ratio", partnerShareRatio);
-                partnerRecord.put("partner_share_amount", partnerShareAmount);
+                partnerRecord.put("partner_share_amount", partnerShareAmount); // 记录伙伴实际支付的额度
                 partnerRecords.add(partnerRecord);
             }
+            
+            // 保存发起人的份额信息（需要在数据库中添加字段或使用其他方式存储）
+            // 暂时先保存到伙伴记录中，后续可以通过farmer_id区分发起人和伙伴
 
             // 保存联合贷款伙伴记录到数据库
             saveJointLoanApplicationPartners(applicationRecordId, partnerRecords);
@@ -1016,11 +1059,17 @@ public class FinancingService {
                 throw new IllegalArgumentException("您当前无可用贷款额度");
             }
 
+            // 检查用户的信用额度是否满足产品的最低信用额度要求
+            if (farmerCreditLimit.getAvailableLimit().compareTo(loanProduct.getMinCreditLimit()) < 0) {
+                throw new IllegalArgumentException("您的可用额度" + farmerCreditLimit.getAvailableLimit() + 
+                        "元低于产品最低额度要求" + loanProduct.getMinCreditLimit() + "元，无法申请该产品");
+            }
+
             SmartLoanRecommendationResponseDTO response = new SmartLoanRecommendationResponseDTO();
             response.setUser_available_limit(farmerCreditLimit.getAvailableLimit());
             response.setApply_amount(request.getApply_amount());
 
-            // 检查个人额度是否足够
+            // 检查申请金额是否超过用户可用额度
             if (request.getApply_amount().compareTo(farmerCreditLimit.getAvailableLimit()) <= 0) {
                 // 个人额度足够，推荐单人贷款
                 response.setRecommendation_type("single");
@@ -1135,11 +1184,20 @@ public class FinancingService {
                 // 预扣该伙伴的信用额度
                 Long partnerFarmerId = ((Long) farmerInfo.get("farmer_id")).longValue();
                 
-                // 计算该伙伴需要承担的份额
-                int totalParticipants = partners.size() + 1; // 伙伴数量 + 发起人
-                BigDecimal partnerShareAmount = loanApplication.getApplyAmount().divide(BigDecimal.valueOf(totalParticipants), 2, BigDecimal.ROUND_HALF_UP);
+                // 从数据库记录中获取该伙伴实际需要支付的额度（不是平均分配）
+                BigDecimal partnerShareAmount = null;
+                for (Map<String, Object> partner : partners) {
+                    if (partner.get("partner_farmer_id").equals(partnerFarmerId)) {
+                        partnerShareAmount = (BigDecimal) partner.get("partner_share_amount");
+                        break;
+                    }
+                }
                 
-                // 预扣额度
+                if (partnerShareAmount == null) {
+                    throw new IllegalArgumentException("未找到该伙伴的份额信息");
+                }
+                
+                // 预扣伙伴额度（使用实际记录的额度）
                 preDeductCreditLimit(partnerFarmerId, partnerShareAmount);
                 
                 // 更新合作伙伴确认状态
@@ -1147,7 +1205,14 @@ public class FinancingService {
                 
                 // 检查是否所有伙伴都已确认
                 if (areAllPartnersConfirmed(loanApplication.getId())) {
-                    // 所有伙伴都确认了，将申请状态更新为待银行审批
+                    // 所有伙伴都确认了，预扣发起人的额度
+                    // 发起人额度 = 申请金额 - 伙伴支付的额度
+                    BigDecimal initiatorShareAmount = loanApplication.getApplyAmount().subtract(partnerShareAmount);
+                    
+                    // 预扣发起人额度（发起人额度全部用光）
+                    preDeductCreditLimit(loanApplication.getFarmerId(), initiatorShareAmount);
+                    
+                    // 将申请状态更新为待银行审批
                     updateLoanApplicationStatus(loanApplication.getLoanApplicationId(), "pending", null, null, null);
                     response.setNext_step("所有合作伙伴已确认，申请已提交银行审批");
                 } else {
@@ -1159,14 +1224,24 @@ public class FinancingService {
                 
             } else if ("reject".equals(request.getAction())) {
                 // 拒绝参与联合贷款
-                Long partnerFarmerId = ((Long) farmerInfo.get("farmer_id")).longValue();
-                updatePartnerConfirmationStatus(loanApplication.getId(), partnerFarmerId, "rejected");
+                Long rejectingPartnerFarmerId = ((Long) farmerInfo.get("farmer_id")).longValue();
+                updatePartnerConfirmationStatus(loanApplication.getId(), rejectingPartnerFarmerId, "rejected");
                 
                 // 将申请状态更新为已拒绝
                 updateLoanApplicationStatus(loanApplication.getLoanApplicationId(), "rejected", null, null, null, "合作伙伴拒绝参与");
                 
-                // 恢复发起人的预扣额度
-                restoreCreditLimit(loanApplication.getFarmerId(), loanApplication.getApplyAmount().divide(BigDecimal.valueOf(partners.size() + 1), 2, BigDecimal.ROUND_HALF_UP));
+                // 恢复已确认伙伴的预扣额度（使用实际记录的额度，不是平均分配）
+                // 获取所有已确认的伙伴，恢复他们的预扣额度
+                List<Map<String, Object>> allPartners = getJointLoanPartnersByApplicationId(loanApplication.getId());
+                for (Map<String, Object> partner : allPartners) {
+                    String status = (String) partner.get("status");
+                    if ("confirmed".equals(status) || "accepted".equals(status)) {
+                        Long confirmedPartnerFarmerId = (Long) partner.get("partner_farmer_id");
+                        BigDecimal confirmedPartnerShareAmount = (BigDecimal) partner.get("partner_share_amount");
+                        // 使用实际记录的额度进行返还
+                        restoreCreditLimit(confirmedPartnerFarmerId, confirmedPartnerShareAmount);
+                    }
+                }
                 
                 response.setAction_result("rejected");
                 response.setMessage("您已拒绝参与该联合贷款申请，申请已被取消");
@@ -1404,7 +1479,33 @@ public class FinancingService {
                 }
 
                 // 还原预扣的信用额度
-                restoreCreditLimit(loanApplication.getFarmerId(), loanApplication.getApplyAmount());
+                // 如果是联合贷款，需要返还发起人和所有已确认伙伴的额度
+                if ("joint".equals(loanApplication.getApplicationType())) {
+                    // 获取联合贷款伙伴信息
+                    List<Map<String, Object>> partners = getJointLoanPartnersByApplicationId(loanApplication.getId());
+                    
+                    // 计算发起人实际支付的额度（申请金额 - 伙伴支付的额度）
+                    BigDecimal partnerShareAmount = BigDecimal.ZERO;
+                    for (Map<String, Object> partner : partners) {
+                        String status = (String) partner.get("status");
+                        if ("confirmed".equals(status) || "accepted".equals(status)) {
+                            BigDecimal shareAmount = (BigDecimal) partner.get("partner_share_amount");
+                            if (shareAmount != null) {
+                                partnerShareAmount = shareAmount;
+                                // 返还已确认伙伴的额度
+                                Long partnerFarmerId = (Long) partner.get("partner_farmer_id");
+                                restoreCreditLimit(partnerFarmerId, shareAmount);
+                            }
+                        }
+                    }
+                    
+                    // 返还发起人的额度（发起人额度 = 申请金额 - 伙伴支付的额度）
+                    BigDecimal initiatorShareAmount = loanApplication.getApplyAmount().subtract(partnerShareAmount);
+                    restoreCreditLimit(loanApplication.getFarmerId(), initiatorShareAmount);
+                } else {
+                    // 单人贷款，直接返还申请金额
+                    restoreCreditLimit(loanApplication.getFarmerId(), loanApplication.getApplyAmount());
+                }
 
                 // 更新贷款申请状态为已拒绝
                 updateLoanApplicationRejection(
@@ -1771,6 +1872,7 @@ public class FinancingService {
 
     /**
      * 处理联合贷款放款
+     * 按各自实际支付的额度分别放款：发起人额度全部用光，伙伴支付剩余额度
      */
     private void handleJointLoanDisbursement(entity.financing.LoanApplication loanApplication,
                                              entity.financing.Loan loan,
@@ -1784,27 +1886,47 @@ public class FinancingService {
             throw new SQLException("未找到主借款人信息");
         }
 
-        // 给主借款人账户增加资金
-        updateUserBalance(mainFarmerUid, loan.getDisburseAmount());
+        // 计算发起人实际支付的额度（申请金额 - 伙伴支付的额度）
+        BigDecimal partnerShareAmount = BigDecimal.ZERO;
+        for (Map<String, Object> partner : partners) {
+            String status = (String) partner.get("status");
+            if ("confirmed".equals(status) || "accepted".equals(status)) {
+                BigDecimal shareAmount = (BigDecimal) partner.get("partner_share_amount");
+                if (shareAmount != null) {
+                    partnerShareAmount = shareAmount;
+                    break; // 双人联合贷款只有一个伙伴
+                }
+            }
+        }
+        
+        // 发起人实际支付的额度 = 申请金额 - 伙伴支付的额度
+        BigDecimal initiatorShareAmount = loanApplication.getApplyAmount().subtract(partnerShareAmount);
+        
+        // 计算份额比例（用于记录）
+        BigDecimal initiatorShareRatio = initiatorShareAmount.divide(loanApplication.getApplyAmount(), 4, BigDecimal.ROUND_HALF_UP)
+                .multiply(BigDecimal.valueOf(100)).setScale(2, BigDecimal.ROUND_HALF_UP);
+        BigDecimal partnerShareRatio = partnerShareAmount.divide(loanApplication.getApplyAmount(), 4, BigDecimal.ROUND_HALF_UP)
+                .multiply(BigDecimal.valueOf(100)).setScale(2, BigDecimal.ROUND_HALF_UP);
+        
+        // 按批准金额的比例计算实际放款金额
+        // 如果批准金额与申请金额不同，需要按比例调整
+        BigDecimal approvalRatio = loan.getLoanAmount().divide(loanApplication.getApplyAmount(), 4, BigDecimal.ROUND_HALF_UP);
+        BigDecimal initiatorDisburseAmount = initiatorShareAmount.multiply(approvalRatio).setScale(2, BigDecimal.ROUND_HALF_UP);
 
-        // 计算每个参与者的份额（包括主申请人在内）
-        int totalParticipants = partners.size() + 1; // 合作伙伴数量 + 主申请人
-        BigDecimal partnerShareRatio = BigDecimal.valueOf(100.0).divide(BigDecimal.valueOf(totalParticipants), 2, BigDecimal.ROUND_HALF_UP);
+        // 给发起人账户增加资金（按实际支付的额度比例放款）
+        updateUserBalance(mainFarmerUid, initiatorDisburseAmount);
 
-        // 主申请人的份额金额基于贷款总金额计算
-        BigDecimal mainShareAmount = loan.getLoanAmount().multiply(partnerShareRatio).divide(BigDecimal.valueOf(100), 2, BigDecimal.ROUND_HALF_UP);
-
-        // 为主申请人创建联合贷款记录（将主申请人也视为合作伙伴之一）
-        BigDecimal mainPrincipal = mainShareAmount;
+        // 为主申请人创建联合贷款记录
+        BigDecimal mainPrincipal = initiatorDisburseAmount;
         BigDecimal mainInterest = calculateTotalInterest(mainPrincipal, loan.getInterestRate(), loan.getTermMonths());
         BigDecimal mainTotalRepayment = mainPrincipal.add(mainInterest);
 
         entity.financing.JointLoan mainJointLoan = new entity.financing.JointLoan();
         mainJointLoan.setLoanId(loanRecordId);
         mainJointLoan.setPartnerFarmerId(loanApplication.getFarmerId()); // 主申请人的农户ID
-        mainJointLoan.setPartnerShareRatio(partnerShareRatio); // 使用平均分配的份额比例
-        mainJointLoan.setPartnerShareAmount(mainPrincipal);
-        mainJointLoan.setPartnerPrincipal(mainPrincipal);
+        mainJointLoan.setPartnerShareRatio(initiatorShareRatio); // 使用实际支付的份额比例
+        mainJointLoan.setPartnerShareAmount(initiatorShareAmount); // 记录发起人实际支付的额度
+        mainJointLoan.setPartnerPrincipal(mainPrincipal); // 实际放款的本金
         mainJointLoan.setPartnerInterest(mainInterest);
         mainJointLoan.setPartnerTotalRepayment(mainTotalRepayment);
         mainJointLoan.setPartnerPaidAmount(BigDecimal.ZERO);
@@ -1816,10 +1938,18 @@ public class FinancingService {
 
         // 为每个联合贷款伙伴创建记录并处理资金
         for (Map<String, Object> partner : partners) {
+            String status = (String) partner.get("status");
+            if (!"confirmed".equals(status) && !"accepted".equals(status)) {
+                continue; // 跳过未确认的伙伴
+            }
+            
             Long partnerFarmerId = (Long) partner.get("partner_farmer_id");
-            // 根据贷款总金额和份额比例计算伙伴的份额金额
+            // 使用数据库中记录的伙伴实际支付的额度
+            BigDecimal partnerShareAmountFromDB = (BigDecimal) partner.get("partner_share_amount");
             BigDecimal partnerShareRatioFromDB = (BigDecimal) partner.get("partner_share_ratio");
-            BigDecimal partnerShareAmount = loan.getLoanAmount().multiply(partnerShareRatioFromDB).divide(BigDecimal.valueOf(100), 2, BigDecimal.ROUND_HALF_UP);
+            
+            // 按批准金额的比例计算实际放款金额
+            BigDecimal partnerActualDisburseAmount = partnerShareAmountFromDB.multiply(approvalRatio).setScale(2, BigDecimal.ROUND_HALF_UP);
 
             // 获取伙伴用户ID
             String partnerUid = getFarmerUidByFarmerId(partnerFarmerId);
@@ -1827,11 +1957,11 @@ public class FinancingService {
                 throw new SQLException("未找到联合贷款伙伴信息: " + partner.get("phone"));
             }
 
-            // 给伙伴账户增加资金
-            updateUserBalance(partnerUid, partnerShareAmount);
+            // 给伙伴账户增加资金（按实际支付的额度比例放款）
+            updateUserBalance(partnerUid, partnerActualDisburseAmount);
 
             // 计算伙伴的利息和总还款金额（与主贷款人使用相同的利率和期限）
-            BigDecimal partnerPrincipal = partnerShareAmount;
+            BigDecimal partnerPrincipal = partnerActualDisburseAmount;
             BigDecimal partnerInterest = calculateTotalInterest(partnerPrincipal, loan.getInterestRate(), loan.getTermMonths());
             BigDecimal partnerTotalRepayment = partnerPrincipal.add(partnerInterest);
 
@@ -1839,9 +1969,9 @@ public class FinancingService {
             entity.financing.JointLoan jointLoan = new entity.financing.JointLoan();
             jointLoan.setLoanId(loanRecordId);
             jointLoan.setPartnerFarmerId(partnerFarmerId);
-            jointLoan.setPartnerShareRatio(partnerShareRatioFromDB);
-            jointLoan.setPartnerShareAmount(partnerShareAmount);
-            jointLoan.setPartnerPrincipal(partnerPrincipal);
+            jointLoan.setPartnerShareRatio(partnerShareRatioFromDB); // 使用实际支付的份额比例
+            jointLoan.setPartnerShareAmount(partnerShareAmountFromDB); // 记录伙伴实际支付的额度
+            jointLoan.setPartnerPrincipal(partnerPrincipal); // 实际放款的本金
             jointLoan.setPartnerInterest(partnerInterest);
             jointLoan.setPartnerTotalRepayment(partnerTotalRepayment);
             jointLoan.setPartnerPaidAmount(BigDecimal.ZERO);
@@ -2378,20 +2508,16 @@ public class FinancingService {
 
         if (request.getPartner_phones() == null || request.getPartner_phones().isEmpty()) {
             errors.add(createError("partner_phones", "联合贷款伙伴手机号数组不能为空"));
-        } else if (request.getPartner_phones().size() < 2 || request.getPartner_phones().size() > 5) {
-            errors.add(createError("partner_phones", "联合贷款至少需要2个伙伴，最多5个伙伴"));
+        } else if (request.getPartner_phones().size() != 1) {
+            errors.add(createError("partner_phones", "联合贷款必须有且仅有1个伙伴"));
         }
 
         if (request.getPurpose() == null || request.getPurpose().trim().isEmpty()) {
             errors.add(createError("purpose", "贷款用途不能为空"));
-        } else if (request.getPurpose().length() < 2 || request.getPurpose().length() > 200) {
-            errors.add(createError("purpose", "贷款用途描述至少需要2个字，最多200个字"));
         }
 
         if (request.getRepayment_plan() == null || request.getRepayment_plan().trim().isEmpty()) {
             errors.add(createError("repayment_plan", "还款计划说明不能为空"));
-        } else if (request.getRepayment_plan().length() < 2 || request.getRepayment_plan().length() > 500) {
-            errors.add(createError("repayment_plan", "还款计划说明至少需要2个字，最多500个字"));
         }
 
         if (request.getJoint_agreement() == null || !request.getJoint_agreement()) {
@@ -2605,6 +2731,90 @@ public class FinancingService {
 
     private void saveCreditApplication(entity.financing.CreditApplication application) throws SQLException {
         dbManager.saveCreditApplication(application);
+    }
+
+    /**
+     * 发送联合贷款消息
+     */
+    public JointLoanMessageResponseDTO sendJointLoanMessage(JointLoanMessageRequestDTO request) {
+        try {
+            // 参数验证
+            if (request.getPhone() == null || request.getPhone().trim().isEmpty()) {
+                throw new IllegalArgumentException("手机号不能为空");
+            }
+            if (request.getApplication_id() == null || request.getApplication_id().trim().isEmpty()) {
+                throw new IllegalArgumentException("申请ID不能为空");
+            }
+            if (request.getReceiver_phone() == null || request.getReceiver_phone().trim().isEmpty()) {
+                throw new IllegalArgumentException("接收者手机号不能为空");
+            }
+            if (request.getContent() == null || request.getContent().trim().isEmpty()) {
+                throw new IllegalArgumentException("消息内容不能为空");
+            }
+
+            // 检查用户是否存在
+            User user = findUserByPhone(request.getPhone());
+            if (user == null) {
+                throw new IllegalArgumentException("用户认证失败，请检查手机号或重新登录");
+            }
+
+            // 保存消息
+            dbManager.saveJointLoanMessage(
+                request.getApplication_id(),
+                request.getPhone(),
+                request.getReceiver_phone(),
+                request.getContent()
+            );
+
+            // 获取消息列表
+            List<Map<String, Object>> messages = dbManager.getJointLoanMessages(
+                request.getApplication_id(),
+                request.getPhone()
+            );
+
+            JointLoanMessageResponseDTO response = new JointLoanMessageResponseDTO();
+            response.setApplication_id(request.getApplication_id());
+            response.setMessages(messages);
+
+            return response;
+        } catch (Exception e) {
+            throw new RuntimeException("发送消息失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 获取联合贷款消息列表
+     */
+    public JointLoanMessageResponseDTO getJointLoanMessages(GetJointLoanMessagesRequestDTO request) {
+        try {
+            // 参数验证
+            if (request.getPhone() == null || request.getPhone().trim().isEmpty()) {
+                throw new IllegalArgumentException("手机号不能为空");
+            }
+            if (request.getApplication_id() == null || request.getApplication_id().trim().isEmpty()) {
+                throw new IllegalArgumentException("申请ID不能为空");
+            }
+
+            // 检查用户是否存在
+            User user = findUserByPhone(request.getPhone());
+            if (user == null) {
+                throw new IllegalArgumentException("用户认证失败，请检查手机号或重新登录");
+            }
+
+            // 获取消息列表
+            List<Map<String, Object>> messages = dbManager.getJointLoanMessages(
+                request.getApplication_id(),
+                request.getPhone()
+            );
+
+            JointLoanMessageResponseDTO response = new JointLoanMessageResponseDTO();
+            response.setApplication_id(request.getApplication_id());
+            response.setMessages(messages);
+
+            return response;
+        } catch (Exception e) {
+            throw new RuntimeException("获取消息失败: " + e.getMessage(), e);
+        }
     }
 
     private entity.financing.CreditApplication getCreditApplicationById(String applicationId) throws SQLException {
