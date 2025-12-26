@@ -910,6 +910,27 @@ public class FinancingService {
 
             // 保存联合贷款伙伴记录到数据库
             saveJointLoanApplicationPartners(applicationRecordId, partnerRecords);
+            
+            // 调试：验证数据是否正确保存
+            System.out.println("=== DEBUG: 验证保存的联合贷款伙伴记录 ===");
+            for (Map<String, Object> partnerRecord : partnerRecords) {
+                Long partnerFarmerId = ((Long) partnerRecord.get("partner_farmer_id"));
+                System.out.println("已保存伙伴记录: partner_farmer_id=" + partnerFarmerId + 
+                                 ", loan_application_id(数据库ID)=" + applicationRecordId);
+            }
+            System.out.println("loan_application_id(字符串ID)=" + loanApplicationId);
+            
+            // 验证：立即查询保存的数据，确保可以查询到
+            List<Map<String, Object>> savedPartners = getJointLoanPartnersByApplicationId(applicationRecordId);
+            System.out.println("验证查询：保存后立即查询，找到 " + savedPartners.size() + " 条伙伴记录");
+            for (Map<String, Object> savedPartner : savedPartners) {
+                System.out.println("  伙伴ID: " + savedPartner.get("partner_farmer_id") + 
+                                 ", 状态: " + savedPartner.get("status"));
+            }
+            System.out.println("=== DEBUG END ===");
+
+            // 更新贷款申请状态为pending_partners（等待合作伙伴确认）
+            updateLoanApplicationStatus(loanApplicationId, "pending_partners", null, null, null);
 
             // 构造成功响应
             JointLoanApplicationResponseDTO response = new JointLoanApplicationResponseDTO();
@@ -1442,9 +1463,11 @@ public class FinancingService {
             }
 
             // 检查申请状态
-            if (!"pending".equals(loanApplication.getStatus()) &&
-                    !"pending_partners".equals(loanApplication.getStatus())) {
-                throw new IllegalArgumentException("该申请状态为" + loanApplication.getStatus() + "，不能重复审批");
+            if (!"pending".equals(loanApplication.getStatus())) {
+                if ("pending_partners".equals(loanApplication.getStatus())) {
+                    throw new IllegalArgumentException("该联合贷款申请还在等待合作伙伴确认，不能审批。请等待所有合作伙伴确认后再审批。");
+                }
+                throw new IllegalArgumentException("该申请状态为" + loanApplication.getStatus() + "，不能审批");
             }
 
             // 构造响应
@@ -1600,6 +1623,16 @@ public class FinancingService {
                     BigDecimal.ROUND_HALF_UP
             );
 
+            // 计算下次还款日期（放款日期后一个月）
+            Timestamp disburseDate = new Timestamp(System.currentTimeMillis());
+            Calendar calendar = Calendar.getInstance();
+            calendar.setTime(disburseDate);
+            calendar.add(Calendar.MONTH, 1);
+            Date nextPaymentDate = new Date(calendar.getTimeInMillis());
+            
+            // 首次还款日期（与下次还款日期相同，因为这是首次）
+            Date firstRepaymentDate = new Date(nextPaymentDate.getTime());
+
             // 创建贷款记录
             entity.financing.Loan loan = new entity.financing.Loan();
             loan.setLoanId(loanId);
@@ -1610,17 +1643,16 @@ public class FinancingService {
             loan.setTermMonths(loanProduct.getTermMonths());
             loan.setRepaymentMethod(loanProduct.getRepaymentMethod());
             loan.setDisburseAmount(request.getDisburse_amount());
-            loan.setDisburseMethod(request.getDisburse_method());
-            loan.setDisburseDate(new Timestamp(System.currentTimeMillis()));
-            loan.setFirstRepaymentDate(request.getFirst_repayment_date());
-            loan.setLoanAccount(request.getLoan_account());
+            loan.setDisburseMethod("bank_transfer"); // 默认银行转账
+            loan.setDisburseDate(disburseDate);
+            loan.setFirstRepaymentDate(firstRepaymentDate); // 设置为下次还款日期
             loan.setDisburseRemarks(request.getRemarks());
             loan.setLoanStatus("active");
             loan.setApprovedBy(((Long) bankInfo.get("bank_id")).longValue());
             loan.setApprovedAt(new Timestamp(System.currentTimeMillis()));
             loan.setTotalRepaymentAmount(totalRepaymentAmount);
             loan.setRemainingPrincipal(request.getDisburse_amount());
-            loan.setNextPaymentDate(request.getFirst_repayment_date());
+            loan.setNextPaymentDate(nextPaymentDate);
             loan.setNextPaymentAmount(monthlyPayment);
             loan.setPurpose(loanApplication.getPurpose());
             loan.setRepaymentSource(loanApplication.getRepaymentSource());
@@ -1655,13 +1687,11 @@ public class FinancingService {
             response.setDisbursement_id("DIS" + System.currentTimeMillis());
             response.setApplication_id(request.getApplication_id());
             response.setDisburse_amount(request.getDisburse_amount());
-            response.setDisburse_method(request.getDisburse_method());
             response.setDisburse_date(new Timestamp(System.currentTimeMillis()));
-            response.setFirst_repayment_date(request.getFirst_repayment_date());
             response.setLoan_status("active");
             response.setTotal_repayment_amount(totalRepaymentAmount);
             response.setMonthly_payment(monthlyPayment);
-            response.setNext_payment_date(request.getFirst_repayment_date());
+            response.setNext_payment_date(nextPaymentDate);
 
             return response;
         } catch (Exception e) {
@@ -2054,26 +2084,6 @@ public class FinancingService {
             errors.add(createError("disburse_amount", "放款金额必须大于0"));
         }
 
-        if (request.getDisburse_method() == null || request.getDisburse_method().trim().isEmpty()) {
-            errors.add(createError("disburse_method", "放款方式不能为空"));
-        } else if (!Arrays.asList("bank_transfer", "cash", "check").contains(request.getDisburse_method())) {
-            errors.add(createError("disburse_method", "放款方式必须是bank_transfer、cash或check"));
-        }
-
-        if (request.getFirst_repayment_date() == null) {
-            errors.add(createError("first_repayment_date", "首次还款日期不能为空"));
-        } else {
-            // 检查首次还款日期是否在放款日期之后至少15天
-            java.util.Date disburseDate = new java.util.Date();
-            java.util.Date firstRepaymentDate = new java.util.Date(request.getFirst_repayment_date().getTime());
-            long diffInMillies = Math.abs(firstRepaymentDate.getTime() - disburseDate.getTime());
-            long diffInDays = TimeUnit.DAYS.convert(diffInMillies, TimeUnit.MILLISECONDS);
-
-            if (diffInDays < 15) {
-                errors.add(createError("first_repayment_date", "首次还款日期不能早于或等于放款日期，必须至少间隔15天"));
-            }
-        }
-
         if (request.getRemarks() != null && request.getRemarks().length() > 200) {
             errors.add(createError("remarks", "放款备注不能超过200个字符"));
         }
@@ -2174,16 +2184,7 @@ public class FinancingService {
             request.setRepayment_amount(loan.getNextPaymentAmount());
         }
 
-        // 创建虚拟还款记录（不保存到数据库）
-        entity.financing.Repayment repayment = new entity.financing.Repayment();
-        repayment.setRepaymentAmount(request.getRepayment_amount());
-        repayment.setRepaymentMethod(request.getRepayment_method());
-        repayment.setRepaymentDate(new Timestamp(System.currentTimeMillis()));
-
-        // 更新贷款状态
-        updateLoanAfterRepayment(loan, repayment, isJointPartner, partnerFarmerId);
-
-        // 计算本金和利息分配
+        // 计算本金和利息分配（必须在更新贷款状态之前计算）
         BigDecimal repaymentAmount = request.getRepayment_amount();
         // 注意：数据库中存储的利率已经是百分比形式（如12.00表示12%），所以需要除以100
         BigDecimal monthlyInterest = loan.getRemainingPrincipal().multiply(loan.getInterestRate())
@@ -2202,6 +2203,17 @@ public class FinancingService {
             interestAmount = repaymentAmount;
             principalAmount = BigDecimal.ZERO;
         }
+
+        // 创建虚拟还款记录（不保存到数据库）
+        entity.financing.Repayment repayment = new entity.financing.Repayment();
+        repayment.setRepaymentAmount(request.getRepayment_amount());
+        repayment.setPrincipalAmount(principalAmount);
+        repayment.setInterestAmount(interestAmount);
+        repayment.setRepaymentMethod(request.getRepayment_method());
+        repayment.setRepaymentDate(new Timestamp(System.currentTimeMillis()));
+
+        // 更新贷款状态（包含本金和利息的更新）
+        updateLoanAfterRepayment(loan, repayment, isJointPartner, partnerFarmerId);
 
         // 构造响应
         RepaymentResponseDTO response = new RepaymentResponseDTO();
@@ -2336,12 +2348,35 @@ public class FinancingService {
                                           boolean isJointPartner, Long partnerFarmerId) throws SQLException {
         Timestamp now = new Timestamp(System.currentTimeMillis());
 
-        // 安全处理 null 值，确保 totalPaidAmount 不为 null
+        // 安全处理 null 值
         BigDecimal currentPaidAmount = loan.getTotalPaidAmount() != null ? loan.getTotalPaidAmount() : BigDecimal.ZERO;
+        BigDecimal currentPaidPrincipal = loan.getTotalPaidPrincipal() != null ? loan.getTotalPaidPrincipal() : BigDecimal.ZERO;
+        BigDecimal currentPaidInterest = loan.getTotalPaidInterest() != null ? loan.getTotalPaidInterest() : BigDecimal.ZERO;
+        BigDecimal currentRemainingPrincipal = loan.getRemainingPrincipal() != null ? loan.getRemainingPrincipal() : BigDecimal.ZERO;
+
+        // 获取本次还款的本金和利息
+        BigDecimal principalAmount = repayment.getPrincipalAmount() != null ? repayment.getPrincipalAmount() : BigDecimal.ZERO;
+        BigDecimal interestAmount = repayment.getInterestAmount() != null ? repayment.getInterestAmount() : BigDecimal.ZERO;
 
         // 更新总还款金额
         BigDecimal newTotalPaidAmount = currentPaidAmount.add(repayment.getRepaymentAmount());
         loan.setTotalPaidAmount(newTotalPaidAmount);
+
+        // 更新累计已还本金
+        BigDecimal newTotalPaidPrincipal = currentPaidPrincipal.add(principalAmount);
+        loan.setTotalPaidPrincipal(newTotalPaidPrincipal);
+
+        // 更新累计已还利息
+        BigDecimal newTotalPaidInterest = currentPaidInterest.add(interestAmount);
+        loan.setTotalPaidInterest(newTotalPaidInterest);
+
+        // 更新剩余本金
+        BigDecimal newRemainingPrincipal = currentRemainingPrincipal.subtract(principalAmount);
+        // 确保剩余本金不为负数
+        if (newRemainingPrincipal.compareTo(BigDecimal.ZERO) < 0) {
+            newRemainingPrincipal = BigDecimal.ZERO;
+        }
+        loan.setRemainingPrincipal(newRemainingPrincipal);
 
         // 检查是否逾期
         if (loan.getNextPaymentDate() != null) {
